@@ -38,7 +38,7 @@ if not GEMINI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Initialize models (load once)
-sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
+sentence_model = SentenceTransformer('paraphrase-MiniLM-L3-v2')
 gemini_model = genai.GenerativeModel('gemini-2.0-flash')
 
 # Security
