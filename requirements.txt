@@ -1,0 +1,9 @@
+fastapi
+uvicorn
+google-generativeai
+pinecone-client
+sentence-transformers
+pydantic
+python-dotenv
+fitz
+PyMuPDF
