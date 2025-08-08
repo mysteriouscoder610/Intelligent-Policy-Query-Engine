@@ -36,7 +36,8 @@ if not GEMINI_API_KEY:
     raise RuntimeError("GEMINI_API_KEY not found in environment variables or .env file")
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Initialize Gemini model only
+# Initialize models (load once)
+sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
 gemini_model = genai.GenerativeModel('gemini-2.0-flash')
 
 # Security
