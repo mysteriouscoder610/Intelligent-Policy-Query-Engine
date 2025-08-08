@@ -1,10 +1,10 @@
 fastapi
 uvicorn
-google-generativeai
-pinecone-client
-sentence-transformers
 pydantic
-python-dotenv
-fitz
-PyMuPDF
+requests
+sentence-transformers
 faiss-cpu
+langchain
+google-generativeai
+PyPDF2
+python-dotenv
