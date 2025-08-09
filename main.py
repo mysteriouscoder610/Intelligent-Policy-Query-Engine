@@ -20,13 +20,6 @@ import time
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Initialize FastAPI app with lifespan
-app = FastAPI(title="Lightweight Query-Retrieval System", lifespan=lifespan)
-
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCXGyMsqh7yDcqk7CAqGBMh-owevThyPAQ")
 genai.configure(api_key=GEMINI_API_KEY)
@@ -48,11 +41,30 @@ tfidf_vectorizer = TfidfVectorizer(
 security = HTTPBearer()
 EXPECTED_TOKEN = "Bearer 1fd4ee76a5f7d0249cf4262bd779267a6e246992896f2ee373d16e9a19254ef5"
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # In-memory caches (with size limits for memory efficiency)
 DOCUMENT_CACHE = {}  # URL -> processed document data
 ANSWER_CACHE = {}    # query_hash -> answer (max 50 items)
 CACHE_LOCK = threading.Lock()
 MAX_ANSWER_CACHE = 50
+
+# Define lifespan context manager BEFORE FastAPI app initialization
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    logger.info("Starting Lightweight Query-Retrieval System")
+    logger.info(f"TF-IDF vectorizer initialized with {tfidf_vectorizer.max_features} features")
+    yield
+    # Shutdown (if needed)
+    logger.info("Shutting down Lightweight Query-Retrieval System")
+
+# Initialize FastAPI app with lifespan
+app = FastAPI(title="Lightweight Query-Retrieval System", lifespan=lifespan)
 
 # Pydantic models
 class QueryRequest(BaseModel):
@@ -415,18 +427,6 @@ async def root():
 async def head_root():
     """Handle HEAD requests for health checks"""
     return {"status": "ok"}
-
-# Use lifespan instead of deprecated on_event
-from contextlib import asynccontextmanager
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    logger.info("Starting Lightweight Query-Retrieval System")
-    logger.info(f"TF-IDF vectorizer initialized with {tfidf_vectorizer.max_features} features")
-    yield
-    # Shutdown (if needed)
-    logger.info("Shutting down Lightweight Query-Retrieval System")
 
 if __name__ == "__main__":
     import uvicorn
