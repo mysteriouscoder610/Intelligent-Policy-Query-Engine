@@ -24,8 +24,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
-app = FastAPI(title="Lightweight Query-Retrieval System")
+# Initialize FastAPI app with lifespan
+app = FastAPI(title="Lightweight Query-Retrieval System", lifespan=lifespan)
 
 # Configure Gemini API
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCXGyMsqh7yDcqk7CAqGBMh-owevThyPAQ")
@@ -411,12 +411,25 @@ async def root():
     """Root endpoint"""
     return {"message": "Lightweight Query-Retrieval API is running"}
 
-# Startup event to warm up the system
-@app.on_event("startup")
-async def startup_event():
+@app.head("/")
+async def head_root():
+    """Handle HEAD requests for health checks"""
+    return {"status": "ok"}
+
+# Use lifespan instead of deprecated on_event
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
     logger.info("Starting Lightweight Query-Retrieval System")
     logger.info(f"TF-IDF vectorizer initialized with {tfidf_vectorizer.max_features} features")
+    yield
+    # Shutdown (if needed)
+    logger.info("Shutting down Lightweight Query-Retrieval System")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    port = int(os.getenv("PORT", 8000))  # Default to 8000, Render will set PORT
+    print(f"Starting server on host 0.0.0.0 port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
