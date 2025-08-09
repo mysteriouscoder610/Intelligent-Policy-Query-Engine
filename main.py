@@ -19,9 +19,15 @@ import threading
 import time
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from dotenv import load_dotenv  # ✅ Added
+
+# Load environment variables from .env
+load_dotenv()
 
 # Configure Gemini API
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyCXGyMsqh7yDcqk7CAqGBMh-owevThyPAQ")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY not found in environment variables.")
 genai.configure(api_key=GEMINI_API_KEY)
 
 # Initialize Gemini model only
@@ -39,7 +45,9 @@ tfidf_vectorizer = TfidfVectorizer(
 
 # Security
 security = HTTPBearer()
-EXPECTED_TOKEN = "Bearer 1fd4ee76a5f7d0249cf4262bd779267a6e246992896f2ee373d16e9a19254ef5"
+EXPECTED_TOKEN = os.getenv("API_ACCESS_TOKEN")
+if not EXPECTED_TOKEN:
+    raise RuntimeError("API_ACCESS_TOKEN not found in environment variables.")
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -65,6 +73,7 @@ async def lifespan(app: FastAPI):
 
 # Initialize FastAPI app with lifespan
 app = FastAPI(title="Lightweight Query-Retrieval System", lifespan=lifespan)
+
 
 # Pydantic models
 class QueryRequest(BaseModel):
