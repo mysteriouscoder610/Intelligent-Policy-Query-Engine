@@ -19,7 +19,7 @@ import threading
 import time
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from dotenv import load_dotenv  # ✅ Added
+from dotenv import load_dotenv
 
 # Load environment variables from .env
 load_dotenv()
@@ -134,15 +134,18 @@ class LightweightDocumentProcessor:
         
         try:
             # Download with timeout and size limit
-            response = requests.get(url, timeout=10, stream=True)
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+            response = requests.get(url, timeout=30, stream=True, headers=headers, verify=True)
             response.raise_for_status()
             
             # Limit file size to prevent memory issues
             pdf_content = BytesIO()
             total_size = 0
-            max_size = 10 * 1024 * 1024  # 10MB limit
+            max_size = 15 * 1024 * 1024  # 15MB limit
             
-            for chunk in response.iter_content(chunk_size=4096):
+            for chunk in response.iter_content(chunk_size=8192):
                 total_size += len(chunk)
                 if total_size > max_size:
                     logger.warning("PDF too large, truncating...")
@@ -154,18 +157,25 @@ class LightweightDocumentProcessor:
             pdf_reader = PyPDF2.PdfReader(pdf_content)
             text = ""
             # Limit pages for faster processing
-            max_pages = min(30, len(pdf_reader.pages))
+            max_pages = min(50, len(pdf_reader.pages))
             
             for i, page in enumerate(pdf_reader.pages[:max_pages]):
-                page_text = page.extract_text()
-                text += page_text + "\n"
+                try:
+                    page_text = page.extract_text()
+                    text += page_text + "\n"
+                except Exception as e:
+                    logger.warning(f"Error extracting page {i}: {e}")
+                    continue
                 
                 # Process incrementally to avoid memory spikes
-                if i % 5 == 0 and i > 0:
+                if i % 10 == 0 and i > 0:
                     logger.info(f"Processed page {i+1}/{max_pages}")
             
             # Clean the text
             text = self.preprocess_text(text)
+            
+            if not text or len(text) < 100:
+                raise ValueError("Insufficient text extracted from PDF")
             
             # Cache the document
             with CACHE_LOCK:
@@ -175,10 +185,11 @@ class LightweightDocumentProcessor:
                     'url': url
                 }
             
+            logger.info(f"Successfully extracted {len(text)} characters from PDF")
             return text
             
         except Exception as e:
-            logger.error(f"Error extracting PDF: {e}")
+            logger.error(f"Error extracting PDF from {url}: {e}")
             raise HTTPException(status_code=400, detail=f"PDF extraction failed: {str(e)}")
     
     def get_processed_document(self, url: str):
@@ -203,6 +214,7 @@ class LightweightDocumentProcessor:
         # Create TF-IDF vectors (much faster than sentence transformers)
         try:
             tfidf_matrix = tfidf_vectorizer.fit_transform(chunks)
+            logger.info(f"TF-IDF matrix shape: {tfidf_matrix.shape}")
         except Exception as e:
             logger.error(f"TF-IDF vectorization failed: {e}")
             # Fallback: use simple word matching
@@ -219,7 +231,7 @@ class LightweightDocumentProcessor:
         logger.info(f"Processed document: {len(chunks)} chunks, {len(text)} chars")
         return DOCUMENT_CACHE[url_hash]
     
-    def keyword_search(self, chunks: List[str], query: str, top_k: int = 2) -> List[str]:
+    def keyword_search(self, chunks: List[str], query: str, top_k: int = 3) -> List[str]:
         """Simple keyword-based search as fallback"""
         query_words = set(query.lower().split())
         scored_chunks = []
@@ -234,7 +246,7 @@ class LightweightDocumentProcessor:
         scored_chunks.sort(key=lambda x: x[1], reverse=True)
         return [chunk for chunk, _ in scored_chunks[:top_k]]
     
-    def tfidf_search(self, doc_data: dict, query: str, top_k: int = 2) -> List[str]:
+    def tfidf_search(self, doc_data: dict, query: str, top_k: int = 3) -> List[str]:
         """Fast TF-IDF based search"""
         if doc_data['tfidf_matrix'] is None:
             # Fallback to keyword search
@@ -256,7 +268,7 @@ class LightweightDocumentProcessor:
                 if similarities[idx] > 0.05:  # Minimum threshold
                     relevant_chunks.append(doc_data['chunks'][idx])
             
-            return relevant_chunks if relevant_chunks else doc_data['chunks'][:2]
+            return relevant_chunks if relevant_chunks else doc_data['chunks'][:top_k]
             
         except Exception as e:
             logger.error(f"TF-IDF search failed: {e}")
@@ -292,13 +304,13 @@ class FastQueryAnswerer:
     def create_concise_prompt(context: str, query: str) -> str:
         """Ultra-concise prompt for faster processing"""
         # Limit context to save tokens and processing time
-        limited_context = context[:800]
+        limited_context = context[:1200]
         
         return f"""Context: {limited_context}
 
 Question: {query}
 
-Give a direct answer in 1-2 sentences. If not in context, say "Not mentioned in document."
+Based on the context above, provide a direct and specific answer. If the information is not found in the context, respond with "Not mentioned in document."
 
 Answer:"""
     
@@ -311,16 +323,26 @@ Answer:"""
         # Simple pattern matching for common query types
         if 'grace period' in query_lower and 'premium' in query_lower:
             # Look for specific patterns
-            pattern = r'grace period[^.]*?(\d+)[^.]*?days?[^.]*?premium'
-            match = re.search(pattern, context_lower)
-            if match:
-                return f"A grace period of {match.group(1)} days is provided for premium payment."
+            patterns = [
+                r'grace period[^.]*?(\d+)[^.]*?days?[^.]*?premium',
+                r'(\d+)[^.]*?days?[^.]*?grace period[^.]*?premium',
+                r'premium[^.]*?grace period[^.]*?(\d+)[^.]*?days?'
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, context_lower)
+                if match:
+                    return f"A grace period of {match.group(1)} days is provided for premium payment."
         
-        if 'waiting period' in query_lower:
-            pattern = r'waiting period[^.]*?(\d+)[^.]*?(months?|years?)'
-            match = re.search(pattern, context_lower)
-            if match:
-                return f"There is a waiting period of {match.group(1)} {match.group(2)}."
+        if 'waiting period' in query_lower and ('pre-existing' in query_lower or 'ped' in query_lower):
+            patterns = [
+                r'waiting period[^.]*?(\d+)[^.]*?(months?|years?)[^.]*?pre-existing',
+                r'pre-existing[^.]*?waiting period[^.]*?(\d+)[^.]*?(months?|years?)',
+                r'(\d+)[^.]*?(months?|years?)[^.]*?waiting period[^.]*?pre-existing'
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, context_lower)
+                if match:
+                    return f"There is a waiting period of {match.group(1)} {match.group(2)} for pre-existing diseases."
         
         # Return None to fallback to full LLM processing
         return None
@@ -335,6 +357,7 @@ Answer:"""
         # Check cache first
         cached = FastQueryAnswerer.get_cached_answer(query_hash, context_hash)
         if cached:
+            logger.info("Using cached answer")
             return cached
         
         # Try pattern-based extraction first
@@ -350,9 +373,9 @@ Answer:"""
             response = gemini_model.generate_content(
                 prompt,
                 generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=50,   # Very limited output
+                    max_output_tokens=100,   # Increased slightly for better answers
                     temperature=0,          # Deterministic
-                    top_p=0.8,             # Focus on most likely tokens
+                    top_p=0.9,             # Focus on most likely tokens
                 )
             )
             answer = response.text.strip()
@@ -369,44 +392,69 @@ Answer:"""
 doc_processor = LightweightDocumentProcessor()
 
 def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
-    if credentials.scheme.lower() != "bearer" or credentials.credentials != EXPECTED_TOKEN.split(" ")[1]:
+    """Verify the Bearer token"""
+    if credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="Invalid authentication scheme")
+    
+    # Handle both "Bearer <token>" and just "<token>" formats
+    expected_token = EXPECTED_TOKEN
+    if expected_token.startswith("Bearer "):
+        expected_token = expected_token.split(" ")[1]
+    
+    if credentials.credentials != expected_token:
         raise HTTPException(status_code=401, detail="Invalid token")
+    
     return credentials
 
 @app.post("/hackrx/run", response_model=QueryResponse, dependencies=[Depends(verify_token)])
 async def run_lightweight_query_retrieval(request: QueryRequest):
-    """Optimized main endpoint for Render free tier"""
+    """Optimized main endpoint for hackathon submission"""
     start_time = time.time()
     
     try:
+        logger.info(f"Processing request with {len(request.questions)} questions")
+        logger.info(f"Document URL: {request.documents}")
+        
+        # Validate input
+        if not request.documents or not request.questions:
+            raise HTTPException(status_code=400, detail="Documents URL and questions are required")
+        
         # Get processed document (cached if available)
         doc_data = doc_processor.get_processed_document(request.documents)
         
         answers = []
         
         # Process queries efficiently
-        for query in request.questions:
-            logger.info(f"Processing: {query[:20]}...")
+        for i, query in enumerate(request.questions):
+            logger.info(f"Processing question {i+1}/{len(request.questions)}: {query[:50]}...")
             
-            # Use lightweight TF-IDF search
-            relevant_chunks = doc_processor.tfidf_search(doc_data, query, top_k=2)
-            
-            if not relevant_chunks:
-                answers.append("No relevant information found in document.")
-                continue
-            
-            context = "\n".join(relevant_chunks)
-            answer = FastQueryAnswerer.generate_fast_answer(context, query)
-            answers.append(answer)
+            try:
+                # Use lightweight TF-IDF search
+                relevant_chunks = doc_processor.tfidf_search(doc_data, query, top_k=3)
+                
+                if not relevant_chunks:
+                    answers.append("No relevant information found in document.")
+                    continue
+                
+                context = "\n\n".join(relevant_chunks)
+                answer = FastQueryAnswerer.generate_fast_answer(context, query)
+                answers.append(answer)
+                
+            except Exception as e:
+                logger.error(f"Error processing question {i+1}: {e}")
+                answers.append("Error processing this question.")
         
         processing_time = time.time() - start_time
         logger.info(f"Total processing time: {processing_time:.2f} seconds")
+        logger.info(f"Generated {len(answers)} answers")
         
         return QueryResponse(answers=answers)
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Unexpected error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 @app.get("/health")
 async def health_check():
@@ -415,7 +463,9 @@ async def health_check():
         "status": "healthy",
         "cached_docs": len(DOCUMENT_CACHE),
         "cached_answers": len(ANSWER_CACHE),
-        "message": "Lightweight Query-Retrieval System is running"
+        "message": "Lightweight Query-Retrieval System is running",
+        "gemini_configured": bool(GEMINI_API_KEY),
+        "auth_configured": bool(EXPECTED_TOKEN)
     }
 
 @app.post("/clear-cache", dependencies=[Depends(verify_token)])
@@ -430,7 +480,14 @@ async def clear_cache():
 @app.get("/")
 async def root():
     """Root endpoint"""
-    return {"message": "Lightweight Query-Retrieval API is running"}
+    return {
+        "message": "Lightweight Query-Retrieval API is running",
+        "version": "1.0",
+        "endpoints": {
+            "main": "/hackrx/run",
+            "health": "/health"
+        }
+    }
 
 @app.head("/")
 async def head_root():
